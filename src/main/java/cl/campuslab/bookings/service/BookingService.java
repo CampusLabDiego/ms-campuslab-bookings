@@ -7,7 +7,10 @@ import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
 import cl.campuslab.bookings.exception.InvalidBookingStatusException;
 import cl.campuslab.bookings.repository.BookingRepository;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -16,34 +19,48 @@ public class BookingService {
 
     private final BookingRepository bookingRepository;
 
-
     public BookingService(BookingRepository bookingRepository) {
         this.bookingRepository = bookingRepository;
     }
 
+    public List<BookingResponse> findAll(Jwt jwt) {
 
-    public List<BookingResponse> findAll() {
+        List<Booking> bookings = puedeGestionar(jwt)
+                ? bookingRepository.findAll()
+                : bookingRepository.findByUserId(ownerId(jwt));
 
-        return bookingRepository.findAll()
-                .stream()
+        return bookings.stream()
                 .map(this::toResponse)
                 .toList();
     }
 
+    public BookingResponse findById(Long id, Jwt jwt) {
 
-    public BookingResponse findById(Long id) {
+        Booking booking;
 
-        Booking booking = findEntityById(id);
+        if (puedeGestionar(jwt)) {
+            booking = findEntityById(id);
+        } else {
+            booking = bookingRepository
+                    .findByIdAndUserId(id, ownerId(jwt))
+                    .orElseThrow(() -> new BookingNotFoundException(id));
+        }
 
         return toResponse(booking);
     }
 
+    public BookingResponse create(BookingRequest request, Jwt jwt) {
 
-    public BookingResponse create(BookingRequest request) {
+        if (!request.endDateTime().isAfter(request.startDateTime())) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La fecha de término debe ser posterior al inicio."
+            );
+        }
 
         Booking booking = Booking.builder()
-                .userId(request.userId())
-                .userEmail(request.userEmail())
+                .userId(ownerId(jwt))
+                .userEmail(displayEmail(jwt))
                 .resourceId(request.resourceId())
                 .resourceName(request.resourceName())
                 .startDateTime(request.startDateTime())
@@ -53,41 +70,77 @@ public class BookingService {
                 .status(BookingStatus.SOLICITADA)
                 .build();
 
-
-        Booking savedBooking = bookingRepository.save(booking);
-
-        return toResponse(savedBooking);
+        return toResponse(bookingRepository.save(booking));
     }
-
 
     public BookingResponse changeStatus(
             Long id,
-            BookingStatus newStatus) {
+            BookingStatus newStatus,
+            Jwt jwt
+    ) {
 
+        if (!puedeGestionar(jwt)) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Tu cuenta no tiene permiso para cambiar estados."
+            );
+        }
 
         Booking booking = findEntityById(id);
 
-
-        validateStatusTransition(
-                booking.getStatus(),
-                newStatus
-        );
-
+        validateStatusTransition(booking.getStatus(), newStatus);
 
         booking.setStatus(newStatus);
 
-
-        Booking updatedBooking = bookingRepository.save(booking);
-
-        return toResponse(updatedBooking);
+        return toResponse(bookingRepository.save(booking));
     }
 
+    private boolean puedeGestionar(Jwt jwt) {
 
+        List<String> roles = jwt.getClaimAsStringList("roles");
+
+        return roles != null
+                && (
+                        roles.contains("Admin")
+                        || roles.contains("Operador")
+                );
+    }
+
+    private String ownerId(Jwt jwt) {
+
+        String id = jwt.getClaimAsString("oid");
+
+        if (id == null || id.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "El token no identifica al propietario."
+            );
+        }
+
+        return id;
+    }
+
+    private String displayEmail(Jwt jwt) {
+
+        String username = jwt.getClaimAsString("preferred_username");
+
+        if (username != null && !username.isBlank()) {
+            return username;
+        }
+
+        String email = jwt.getClaimAsString("email");
+
+        if (email != null && !email.isBlank()) {
+            return email;
+        }
+
+        return ownerId(jwt);
+    }
 
     private void validateStatusTransition(
             BookingStatus currentStatus,
-            BookingStatus newStatus) {
-
+            BookingStatus newStatus
+    ) {
 
         boolean validTransition = switch (currentStatus) {
 
@@ -95,27 +148,20 @@ public class BookingService {
                     newStatus == BookingStatus.APROBADA
                     || newStatus == BookingStatus.CANCELADA;
 
-
             case APROBADA ->
                     newStatus == BookingStatus.EN_PREPARACION
                     || newStatus == BookingStatus.CANCELADA;
 
-
             case EN_PREPARACION ->
                     newStatus == BookingStatus.EN_USO;
-
 
             case EN_USO ->
                     newStatus == BookingStatus.DEVUELTA;
 
-
-            case DEVUELTA, CANCELADA ->
-                    false;
+            case DEVUELTA, CANCELADA -> false;
         };
 
-
         if (!validTransition) {
-
             throw new InvalidBookingStatusException(
                     "No se puede cambiar de "
                     + currentStatus
@@ -125,16 +171,11 @@ public class BookingService {
         }
     }
 
-
-
     private Booking findEntityById(Long id) {
 
         return bookingRepository.findById(id)
-                .orElseThrow(() -> 
-                    new BookingNotFoundException(id));
+                .orElseThrow(() -> new BookingNotFoundException(id));
     }
-
-
 
     private BookingResponse toResponse(Booking booking) {
 

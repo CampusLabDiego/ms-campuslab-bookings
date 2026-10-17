@@ -7,7 +7,7 @@ import java.time.LocalDateTime;
 public record BookingResponse(
 
         Long id,
-        Long userId,
+        String userId,
         String userEmail,
         Long resourceId,
         String resourceName,
