@@ -5,8 +5,12 @@ import cl.campuslab.bookings.dto.BookingResponse;
 import cl.campuslab.bookings.entity.Booking;
 import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
-import cl.campuslab.bookings.exception.InvalidBookingStatusException;
 import cl.campuslab.bookings.repository.BookingRepository;
+
+import cl.campuslab.bookings.stock.BookingStockWorkflow;
+import cl.campuslab.bookings.stock.CatalogClient;
+import cl.campuslab.bookings.stock.CatalogRejectedException;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
@@ -18,9 +22,17 @@ import java.util.List;
 public class BookingService {
 
     private final BookingRepository bookingRepository;
+    private final CatalogClient catalog;
+    private final BookingStockWorkflow stockWorkflow;
 
-    public BookingService(BookingRepository bookingRepository) {
+    public BookingService(
+            BookingRepository bookingRepository,
+            CatalogClient catalog,
+            BookingStockWorkflow stockWorkflow
+    ) {
         this.bookingRepository = bookingRepository;
+        this.catalog = catalog;
+        this.stockWorkflow = stockWorkflow;
     }
 
     public List<BookingResponse> findAll(Jwt jwt) {
@@ -34,8 +46,10 @@ public class BookingService {
                 .toList();
     }
 
-    public BookingResponse findById(Long id, Jwt jwt) {
-
+    public BookingResponse findById(
+            Long id,
+            Jwt jwt
+    ) {
         Booking booking;
 
         if (puedeGestionar(jwt)) {
@@ -43,18 +57,49 @@ public class BookingService {
         } else {
             booking = bookingRepository
                     .findByIdAndUserId(id, ownerId(jwt))
-                    .orElseThrow(() -> new BookingNotFoundException(id));
+                    .orElseThrow(() ->
+                            new BookingNotFoundException(id)
+                    );
         }
 
         return toResponse(booking);
     }
 
-    public BookingResponse create(BookingRequest request, Jwt jwt) {
-
-        if (!request.endDateTime().isAfter(request.startDateTime())) {
+    public BookingResponse create(
+            BookingRequest request,
+            Jwt jwt
+    ) {
+        if (
+                !request.endDateTime()
+                        .isAfter(request.startDateTime())
+        ) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "La fecha de término debe ser posterior al inicio."
+            );
+        }
+
+        CatalogClient.ResourceView resource =
+                catalog.resource(
+                        request.resourceId(),
+                        jwt
+                );
+
+        if (!Boolean.TRUE.equals(resource.active())) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "El recurso está inactivo."
+            );
+        }
+
+        boolean esLaboratorio =
+                "LABORATORIO".equals(resource.type())
+                || "LABORATORY".equals(resource.type());
+
+        if (esLaboratorio && request.quantity() != 1) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Un laboratorio se reserva con cantidad 1."
             );
         }
 
@@ -62,7 +107,7 @@ public class BookingService {
                 .userId(ownerId(jwt))
                 .userEmail(displayEmail(jwt))
                 .resourceId(request.resourceId())
-                .resourceName(request.resourceName())
+                .resourceName(resource.name())
                 .startDateTime(request.startDateTime())
                 .endDateTime(request.endDateTime())
                 .purpose(request.purpose())
@@ -70,7 +115,9 @@ public class BookingService {
                 .status(BookingStatus.SOLICITADA)
                 .build();
 
-        return toResponse(bookingRepository.save(booking));
+        return toResponse(
+                bookingRepository.save(booking)
+        );
     }
 
     public BookingResponse changeStatus(
@@ -78,7 +125,6 @@ public class BookingService {
             BookingStatus newStatus,
             Jwt jwt
     ) {
-
         if (!puedeGestionar(jwt)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
@@ -86,18 +132,57 @@ public class BookingService {
             );
         }
 
-        Booking booking = findEntityById(id);
+        BookingStockWorkflow.PendingChange change =
+                stockWorkflow.prepare(id, newStatus);
 
-        validateStatusTransition(booking.getStatus(), newStatus);
+        executeStock(change, jwt);
 
-        booking.setStatus(newStatus);
+        return toResponse(findEntityById(id));
+    }
 
-        return toResponse(bookingRepository.save(booking));
+    public BookingResponse reconcileStock(
+            Long id,
+            Jwt jwt
+    ) {
+        if (!puedeGestionar(jwt)) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Tu cuenta no puede sincronizar stock."
+            );
+        }
+
+        BookingStockWorkflow.PendingChange change =
+                stockWorkflow.prepareReconciliation(id);
+
+        executeStock(change, jwt);
+
+        return toResponse(findEntityById(id));
+    }
+
+    private void executeStock(
+            BookingStockWorkflow.PendingChange change,
+            Jwt jwt
+    ) {
+        if (change == null) {
+            return;
+        }
+
+        try {
+            catalog.apply(change, jwt);
+
+        } catch (CatalogRejectedException rejected) {
+            stockWorkflow.reject(change);
+            throw rejected;
+        }
+
+        // Si ocurre un error incierto, la intención queda
+        // guardada para reintentar la misma operación.
+        stockWorkflow.complete(change);
     }
 
     private boolean puedeGestionar(Jwt jwt) {
-
-        List<String> roles = jwt.getClaimAsStringList("roles");
+        List<String> roles =
+                jwt.getClaimAsStringList("roles");
 
         return roles != null
                 && (
@@ -107,7 +192,6 @@ public class BookingService {
     }
 
     private String ownerId(Jwt jwt) {
-
         String id = jwt.getClaimAsString("oid");
 
         if (id == null || id.isBlank()) {
@@ -121,8 +205,8 @@ public class BookingService {
     }
 
     private String displayEmail(Jwt jwt) {
-
-        String username = jwt.getClaimAsString("preferred_username");
+        String username =
+                jwt.getClaimAsString("preferred_username");
 
         if (username != null && !username.isBlank()) {
             return username;
@@ -137,48 +221,14 @@ public class BookingService {
         return ownerId(jwt);
     }
 
-    private void validateStatusTransition(
-            BookingStatus currentStatus,
-            BookingStatus newStatus
-    ) {
-
-        boolean validTransition = switch (currentStatus) {
-
-            case SOLICITADA ->
-                    newStatus == BookingStatus.APROBADA
-                    || newStatus == BookingStatus.CANCELADA;
-
-            case APROBADA ->
-                    newStatus == BookingStatus.EN_PREPARACION
-                    || newStatus == BookingStatus.CANCELADA;
-
-            case EN_PREPARACION ->
-                    newStatus == BookingStatus.EN_USO;
-
-            case EN_USO ->
-                    newStatus == BookingStatus.DEVUELTA;
-
-            case DEVUELTA, CANCELADA -> false;
-        };
-
-        if (!validTransition) {
-            throw new InvalidBookingStatusException(
-                    "No se puede cambiar de "
-                    + currentStatus
-                    + " a "
-                    + newStatus
-            );
-        }
-    }
-
     private Booking findEntityById(Long id) {
-
         return bookingRepository.findById(id)
-                .orElseThrow(() -> new BookingNotFoundException(id));
+                .orElseThrow(() ->
+                        new BookingNotFoundException(id)
+                );
     }
 
     private BookingResponse toResponse(Booking booking) {
-
         return new BookingResponse(
                 booking.getId(),
                 booking.getUserId(),
@@ -191,7 +241,8 @@ public class BookingService {
                 booking.getQuantity(),
                 booking.getStatus(),
                 booking.getCreatedAt(),
-                booking.getUpdatedAt()
+                booking.getUpdatedAt(),
+                booking.getPendingStatus()
         );
     }
 }

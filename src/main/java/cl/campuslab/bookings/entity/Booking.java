@@ -1,8 +1,23 @@
 package cl.campuslab.bookings.entity;
 
 import cl.campuslab.bookings.enums.BookingStatus;
-import jakarta.persistence.*;
-import lombok.*;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 import java.time.LocalDateTime;
 
@@ -47,16 +62,22 @@ public class Booking {
     @Column(nullable = false)
     private BookingStatus status;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pending_status", length = 30)
+    private BookingStatus pendingStatus;
+
+    @Column(
+            name = "created_at",
+            nullable = false,
+            updatable = false
+    )
     private LocalDateTime createdAt;
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-
     @PrePersist
     public void prePersist() {
-
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
 
@@ -64,7 +85,6 @@ public class Booking {
             this.status = BookingStatus.SOLICITADA;
         }
     }
-
 
     @PreUpdate
     public void preUpdate() {

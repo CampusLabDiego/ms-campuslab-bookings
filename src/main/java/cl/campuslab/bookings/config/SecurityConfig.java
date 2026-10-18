@@ -4,19 +4,24 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+
 import org.springframework.security.web.SecurityFilterChain;
 
 import java.util.Arrays;
@@ -35,11 +40,19 @@ public class SecurityConfig {
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
+
                 .sessionManagement(session -> session
-                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                        .sessionCreationPolicy(
+                                SessionCreationPolicy.STATELESS
+                        )
                 )
+
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/**")
+
+                        .requestMatchers(
+                                HttpMethod.OPTIONS,
+                                "/**"
+                        )
                         .permitAll()
 
                         .requestMatchers(
@@ -47,23 +60,44 @@ public class SecurityConfig {
                                 "/api/bookings",
                                 "/api/bookings/**"
                         )
-                        .hasAnyRole("Admin", "Operador", "Cliente")
+                        .hasAnyRole(
+                                "Admin",
+                                "Operador",
+                                "Cliente"
+                        )
 
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/bookings"
                         )
-                        .hasAnyRole("Admin", "Operador", "Cliente")
+                        .hasAnyRole(
+                                "Admin",
+                                "Operador",
+                                "Cliente"
+                        )
 
                         .requestMatchers(
                                 HttpMethod.PATCH,
                                 "/api/bookings/*/status"
                         )
-                        .hasAnyRole("Admin", "Operador")
+                        .hasAnyRole(
+                                "Admin",
+                                "Operador"
+                        )
+
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/bookings/*/stock/reconcile"
+                        )
+                        .hasAnyRole(
+                                "Admin",
+                                "Operador"
+                        )
 
                         .anyRequest()
                         .denyAll()
                 )
+
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt
                                 .jwtAuthenticationConverter(
@@ -71,6 +105,7 @@ public class SecurityConfig {
                                 )
                         )
                 )
+
                 .build();
     }
 
@@ -86,7 +121,9 @@ public class SecurityConfig {
         JwtAuthenticationConverter converter =
                 new JwtAuthenticationConverter();
 
-        converter.setJwtGrantedAuthoritiesConverter(rolesConverter);
+        converter.setJwtGrantedAuthoritiesConverter(
+                rolesConverter
+        );
 
         return converter;
     }
@@ -101,7 +138,9 @@ public class SecurityConfig {
     ) {
 
         NimbusJwtDecoder decoder =
-                NimbusJwtDecoder.withIssuerLocation(issuer).build();
+                NimbusJwtDecoder
+                        .withIssuerLocation(issuer)
+                        .build();
 
         OAuth2TokenValidator<Jwt> applicationValidator = jwt -> {
 
@@ -114,10 +153,13 @@ public class SecurityConfig {
             boolean validScope =
                     scope != null
                     && Arrays.stream(scope.split("\\s+"))
-                            .anyMatch("access_as_user"::equals);
+                            .anyMatch(
+                                    "access_as_user"::equals
+                            );
 
             boolean validOwner =
-                    ownerId != null && !ownerId.isBlank();
+                    ownerId != null
+                    && !ownerId.isBlank();
 
             boolean hasExpiration =
                     jwt.getExpiresAt() != null;
@@ -142,7 +184,9 @@ public class SecurityConfig {
 
         decoder.setJwtValidator(
                 new DelegatingOAuth2TokenValidator<>(
-                        JwtValidators.createDefaultWithIssuer(issuer),
+                        JwtValidators.createDefaultWithIssuer(
+                                issuer
+                        ),
                         applicationValidator
                 )
         );

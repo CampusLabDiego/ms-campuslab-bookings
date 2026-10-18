@@ -7,17 +7,30 @@ import java.time.LocalDateTime;
 public record BookingResponse(
 
         Long id,
+
         String userId,
+
         String userEmail,
+
         Long resourceId,
+
         String resourceName,
+
         LocalDateTime startDateTime,
+
         LocalDateTime endDateTime,
+
         String purpose,
+
         Integer quantity,
+
         BookingStatus status,
+
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+
+        LocalDateTime updatedAt,
+
+        BookingStatus pendingStatus
 
 ) {
 }
