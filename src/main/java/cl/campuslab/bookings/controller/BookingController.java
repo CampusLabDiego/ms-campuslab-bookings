@@ -88,4 +88,14 @@ public class BookingController {
                 bookingService.reconcileStock(id, jwt)
         );
     }
+
+    @PostMapping("/{id}/arrival")
+    public ResponseEntity<BookingResponse> confirmArrival(
+            @PathVariable Long id,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        return ResponseEntity.ok(
+                bookingService.confirmArrival(id, jwt)
+        );
+    }
 }

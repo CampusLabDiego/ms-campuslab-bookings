@@ -20,7 +20,6 @@ public class BookingStockWorkflow {
         this.bookings = bookings;
     }
 
-    // Guarda la intención antes de comunicarse con Catálogo.
     @Transactional
     public PendingChange prepare(
             Long id,
@@ -111,7 +110,6 @@ public class BookingStockWorkflow {
     public void complete(PendingChange change) {
         Booking booking = locked(change.bookingId());
 
-        // Otro reintento pudo haber completado la misma operación.
         if (
                 booking.getPendingStatus() == null
                 && booking.getStatus() == change.target()
@@ -127,6 +125,14 @@ public class BookingStockWorkflow {
         }
 
         booking.setStatus(change.target());
+
+        // Catálogo ya confirmó el movimiento antes de llegar aquí.
+        // Los estados activos mantienen las unidades comprometidas.
+        // Cancelar o finalizar libera esa marca local.
+        booking.setStockReserved(
+                BookingTransitions.active(change.target())
+        );
+
         booking.setPendingStatus(null);
 
         bookings.saveAndFlush(booking);

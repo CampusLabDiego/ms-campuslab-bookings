@@ -7,6 +7,7 @@ import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
 import cl.campuslab.bookings.repository.BookingRepository;
 
+import cl.campuslab.bookings.stock.ArrivalPolicy;
 import cl.campuslab.bookings.stock.BookingStockWorkflow;
 import cl.campuslab.bookings.stock.CatalogClient;
 import cl.campuslab.bookings.stock.CatalogRejectedException;
@@ -14,8 +15,11 @@ import cl.campuslab.bookings.stock.CatalogRejectedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 @Service
@@ -159,6 +163,82 @@ public class BookingService {
         return toResponse(findEntityById(id));
     }
 
+    @Transactional
+    public BookingResponse confirmArrival(
+            Long id,
+            Jwt jwt
+    ) {
+        if (!tieneRol(jwt, "Cliente")) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Esta operación corresponde al Cliente "
+                    + "propietario de la reserva."
+            );
+        }
+
+        String propietario = ownerId(jwt);
+
+        Booking booking = bookingRepository
+                .findLockedById(id)
+                .filter(actual ->
+                        propietario.equals(actual.getUserId())
+                )
+                .orElseThrow(() ->
+                        new BookingNotFoundException(id)
+                );
+
+        if (booking.getPendingStatus() != null) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "La reserva tiene una operación pendiente. "
+                    + "Solicita al Operador que la complete."
+            );
+        }
+
+        // Un reintento después de confirmar no cambia nada.
+        if (booking.getStatus() == BookingStatus.EN_USO) {
+            return toResponse(booking);
+        }
+
+        if (booking.getStatus() != BookingStatus.EN_PREPARACION) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Solo puedes confirmar la llegada cuando "
+                    + "la reserva está EN PREPARACIÓN."
+            );
+        }
+
+        if (!Boolean.TRUE.equals(booking.getStockReserved())) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "El stock de esta reserva todavía no está "
+                    + "confirmado. Solicita al Operador "
+                    + "que lo sincronice."
+            );
+        }
+
+        try {
+            ArrivalPolicy.validate(
+                    booking.getStartDateTime(),
+                    booking.getEndDateTime(),
+                    LocalDateTime.now(ZoneOffset.UTC)
+            );
+        } catch (IllegalArgumentException error) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    error.getMessage()
+            );
+        }
+
+        // El stock ya se descontó previamente.
+        // Confirmar llegada solo modifica el estado.
+        booking.setStatus(BookingStatus.EN_USO);
+
+        return toResponse(
+                bookingRepository.saveAndFlush(booking)
+        );
+    }
+
     private void executeStock(
             BookingStockWorkflow.PendingChange change,
             Jwt jwt
@@ -175,20 +255,22 @@ public class BookingService {
             throw rejected;
         }
 
-        // Si ocurre un error incierto, la intención queda
-        // guardada para reintentar la misma operación.
         stockWorkflow.complete(change);
     }
 
     private boolean puedeGestionar(Jwt jwt) {
+        return tieneRol(jwt, "Admin")
+                || tieneRol(jwt, "Operador");
+    }
+
+    private boolean tieneRol(
+            Jwt jwt,
+            String rol
+    ) {
         List<String> roles =
                 jwt.getClaimAsStringList("roles");
 
-        return roles != null
-                && (
-                        roles.contains("Admin")
-                        || roles.contains("Operador")
-                );
+        return roles != null && roles.contains(rol);
     }
 
     private String ownerId(Jwt jwt) {

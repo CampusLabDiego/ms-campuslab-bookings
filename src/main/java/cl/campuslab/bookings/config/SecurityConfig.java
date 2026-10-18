@@ -77,6 +77,12 @@ public class SecurityConfig {
                         )
 
                         .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/bookings/*/arrival"
+                        )
+                        .hasRole("Cliente")
+
+                        .requestMatchers(
                                 HttpMethod.PATCH,
                                 "/api/bookings/*/status"
                         )

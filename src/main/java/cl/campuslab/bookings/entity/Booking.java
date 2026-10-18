@@ -66,6 +66,9 @@ public class Booking {
     @Column(name = "pending_status", length = 30)
     private BookingStatus pendingStatus;
 
+    @Column(name = "stock_reserved")
+    private Boolean stockReserved;
+
     @Column(
             name = "created_at",
             nullable = false,
@@ -83,6 +86,10 @@ public class Booking {
 
         if (this.status == null) {
             this.status = BookingStatus.SOLICITADA;
+        }
+
+        if (this.stockReserved == null) {
+            this.stockReserved = false;
         }
     }
 
