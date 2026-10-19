@@ -25,8 +25,8 @@ public class BookingTaskPublisher {
 
     public BookingTaskPublisher(
             RabbitTemplate rabbitTemplate,
-            BookingTaskOutboxStore store) {
-
+            BookingTaskOutboxStore store
+    ) {
         this.rabbitTemplate = rabbitTemplate;
         this.store = store;
     }
@@ -46,13 +46,17 @@ public class BookingTaskPublisher {
     }
 
     private void publish(
-            BookingTaskOutboxStore.Publication publication) {
-
+            BookingTaskOutboxStore.Publication publication
+    ) {
         String taskId = publication.taskId();
         int attempt = publication.attempt();
 
+        String exchange = exchange(publication.taskType());
+        String routingKey = routingKey(publication.taskType());
+
         CorrelationData correlation = new CorrelationData(
-                taskId + ":task:" + attempt);
+                taskId + ":task:" + attempt
+        );
 
         try {
             MessageProperties properties = new MessageProperties();
@@ -71,8 +75,8 @@ public class BookingTaskPublisher {
             );
 
             rabbitTemplate.send(
-                    RabbitNames.COMMAND_EXCHANGE,
-                    routingKey(publication.taskType()),
+                    exchange,
+                    routingKey,
                     message,
                     correlation
             );
@@ -85,13 +89,19 @@ public class BookingTaskPublisher {
                 store.markFailed(
                         taskId,
                         attempt,
-                        "La tarea no encontro una cola de destino.");
+                        "La tarea no encontró una cola de destino."
+                );
 
                 log.warn(
-                        "Tarea sin cola de destino: tarea={}, tipo={}, intento={}",
+                        "Tarea sin cola de destino: "
+                                + "tarea={}, tipo={}, exchange={}, "
+                                + "routingKey={}, intento={}",
                         taskId,
                         publication.taskType(),
-                        attempt);
+                        exchange,
+                        routingKey,
+                        attempt
+                );
 
                 return;
             }
@@ -100,12 +110,16 @@ public class BookingTaskPublisher {
                 store.markFailed(
                         taskId,
                         attempt,
-                        "El broker rechazo la publicacion de la tarea.");
+                        "El broker rechazó la publicación de la tarea."
+                );
 
                 log.warn(
-                        "Tarea rechazada por el broker: tarea={}, intento={}",
+                        "Tarea rechazada por el broker: "
+                                + "tarea={}, exchange={}, intento={}",
                         taskId,
-                        attempt);
+                        exchange,
+                        attempt
+                );
 
                 return;
             }
@@ -113,10 +127,14 @@ public class BookingTaskPublisher {
             store.markPublished(taskId, attempt);
 
             log.info(
-                    "Tarea publicada: tarea={}, tipo={}, intento={}",
+                    "Tarea publicada: tarea={}, tipo={}, "
+                            + "exchange={}, routingKey={}, intento={}",
                     taskId,
                     publication.taskType(),
-                    attempt);
+                    exchange,
+                    routingKey,
+                    attempt
+            );
 
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -124,24 +142,40 @@ public class BookingTaskPublisher {
             store.markFailed(
                     taskId,
                     attempt,
-                    "La publicacion de la tarea fue interrumpida.");
+                    "La publicación de la tarea fue interrumpida."
+            );
 
         } catch (Exception exception) {
             store.markFailed(
                     taskId,
                     attempt,
-                    "No se pudo confirmar la publicacion: "
-                            + exception.getClass().getSimpleName());
+                    "No se pudo confirmar la publicación: "
+                            + exception.getClass().getSimpleName()
+            );
 
             log.warn(
-                    "Tarea pendiente de reintento: tarea={}, intento={}, causa={}",
+                    "Tarea pendiente de reintento: "
+                            + "tarea={}, exchange={}, intento={}, causa={}",
                     taskId,
+                    exchange,
                     attempt,
-                    exception.getClass().getSimpleName());
+                    exception.getClass().getSimpleName()
+            );
         }
     }
 
-    private String routingKey(BookingTaskMessage.TaskType taskType) {
+    private String exchange(
+            BookingTaskMessage.TaskType taskType
+    ) {
+        return switch (taskType) {
+            case EMAIL, VOUCHER -> RabbitNames.TOPIC_EXCHANGE;
+            case PREPARATION -> RabbitNames.COMMAND_EXCHANGE;
+        };
+    }
+
+    private String routingKey(
+            BookingTaskMessage.TaskType taskType
+    ) {
         return switch (taskType) {
             case EMAIL -> RabbitNames.EMAIL_ROUTING_KEY;
             case PREPARATION -> RabbitNames.PREP_ROUTING_KEY;
