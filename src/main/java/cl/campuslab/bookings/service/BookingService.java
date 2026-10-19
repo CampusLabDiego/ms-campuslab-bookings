@@ -1,26 +1,24 @@
 package cl.campuslab.bookings.service;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
+
 import cl.campuslab.bookings.dto.BookingRequest;
 import cl.campuslab.bookings.dto.BookingResponse;
 import cl.campuslab.bookings.entity.Booking;
 import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
 import cl.campuslab.bookings.repository.BookingRepository;
-
 import cl.campuslab.bookings.stock.ArrivalPolicy;
 import cl.campuslab.bookings.stock.BookingStockWorkflow;
 import cl.campuslab.bookings.stock.CatalogClient;
-import cl.campuslab.bookings.stock.CatalogRejectedException;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.util.List;
 
 @Service
 public class BookingService {
@@ -32,15 +30,14 @@ public class BookingService {
     public BookingService(
             BookingRepository bookingRepository,
             CatalogClient catalog,
-            BookingStockWorkflow stockWorkflow
-    ) {
+            BookingStockWorkflow stockWorkflow) {
+
         this.bookingRepository = bookingRepository;
         this.catalog = catalog;
         this.stockWorkflow = stockWorkflow;
     }
 
     public List<BookingResponse> findAll(Jwt jwt) {
-
         List<Booking> bookings = puedeGestionar(jwt)
                 ? bookingRepository.findAll()
                 : bookingRepository.findByUserId(ownerId(jwt));
@@ -50,10 +47,7 @@ public class BookingService {
                 .toList();
     }
 
-    public BookingResponse findById(
-            Long id,
-            Jwt jwt
-    ) {
+    public BookingResponse findById(Long id, Jwt jwt) {
         Booking booking;
 
         if (puedeGestionar(jwt)) {
@@ -62,8 +56,7 @@ public class BookingService {
             booking = bookingRepository
                     .findByIdAndUserId(id, ownerId(jwt))
                     .orElseThrow(() ->
-                            new BookingNotFoundException(id)
-                    );
+                            new BookingNotFoundException(id));
         }
 
         return toResponse(booking);
@@ -71,12 +64,11 @@ public class BookingService {
 
     public BookingResponse create(
             BookingRequest request,
-            Jwt jwt
-    ) {
-        if (
-                !request.endDateTime()
-                        .isAfter(request.startDateTime())
-        ) {
+            Jwt jwt) {
+
+        if (!request.endDateTime()
+                .isAfter(request.startDateTime())) {
+
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "La fecha de término debe ser posterior al inicio."
@@ -84,10 +76,7 @@ public class BookingService {
         }
 
         CatalogClient.ResourceView resource =
-                catalog.resource(
-                        request.resourceId(),
-                        jwt
-                );
+                catalog.resource(request.resourceId(), jwt);
 
         if (!Boolean.TRUE.equals(resource.active())) {
             throw new ResponseStatusException(
@@ -98,7 +87,7 @@ public class BookingService {
 
         boolean esLaboratorio =
                 "LABORATORIO".equals(resource.type())
-                || "LABORATORY".equals(resource.type());
+                        || "LABORATORY".equals(resource.type());
 
         if (esLaboratorio && request.quantity() != 1) {
             throw new ResponseStatusException(
@@ -119,16 +108,14 @@ public class BookingService {
                 .status(BookingStatus.SOLICITADA)
                 .build();
 
-        return toResponse(
-                bookingRepository.save(booking)
-        );
+        return toResponse(bookingRepository.save(booking));
     }
 
     public BookingResponse changeStatus(
             Long id,
             BookingStatus newStatus,
-            Jwt jwt
-    ) {
+            Jwt jwt) {
+
         if (!puedeGestionar(jwt)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
@@ -136,18 +123,15 @@ public class BookingService {
             );
         }
 
-        BookingStockWorkflow.PendingChange change =
-                stockWorkflow.prepare(id, newStatus);
+        // Guarda el estado pendiente y el comando en la misma
+        // transaccion. El publicador lo enviara en segundo plano.
+        stockWorkflow.prepare(id, newStatus);
 
-        executeStock(change, jwt);
-
+        // No espera la respuesta de catalogo.
         return toResponse(findEntityById(id));
     }
 
-    public BookingResponse reconcileStock(
-            Long id,
-            Jwt jwt
-    ) {
+    public BookingResponse reconcileStock(Long id, Jwt jwt) {
         if (!puedeGestionar(jwt)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
@@ -155,24 +139,19 @@ public class BookingService {
             );
         }
 
-        BookingStockWorkflow.PendingChange change =
-                stockWorkflow.prepareReconciliation(id);
-
-        executeStock(change, jwt);
+        // La sincronizacion tambien se procesa mediante RabbitMQ.
+        stockWorkflow.prepareReconciliation(id);
 
         return toResponse(findEntityById(id));
     }
 
     @Transactional
-    public BookingResponse confirmArrival(
-            Long id,
-            Jwt jwt
-    ) {
+    public BookingResponse confirmArrival(Long id, Jwt jwt) {
         if (!tieneRol(jwt, "Cliente")) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
                     "Esta operación corresponde al Cliente "
-                    + "propietario de la reserva."
+                            + "propietario de la reserva."
             );
         }
 
@@ -181,21 +160,20 @@ public class BookingService {
         Booking booking = bookingRepository
                 .findLockedById(id)
                 .filter(actual ->
-                        propietario.equals(actual.getUserId())
-                )
+                        propietario.equals(actual.getUserId()))
                 .orElseThrow(() ->
-                        new BookingNotFoundException(id)
-                );
+                        new BookingNotFoundException(id));
 
         if (booking.getPendingStatus() != null) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "La reserva tiene una operación pendiente. "
-                    + "Solicita al Operador que la complete."
+                            + "Espera a que termine antes de confirmar "
+                            + "la llegada."
             );
         }
 
-        // Un reintento después de confirmar no cambia nada.
+        // Repetir la confirmacion no modifica el stock ni el estado.
         if (booking.getStatus() == BookingStatus.EN_USO) {
             return toResponse(booking);
         }
@@ -204,7 +182,7 @@ public class BookingService {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "Solo puedes confirmar la llegada cuando "
-                    + "la reserva está EN PREPARACIÓN."
+                            + "la reserva está EN PREPARACIÓN."
             );
         }
 
@@ -212,8 +190,8 @@ public class BookingService {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "El stock de esta reserva todavía no está "
-                    + "confirmado. Solicita al Operador "
-                    + "que lo sincronice."
+                            + "confirmado. Solicita al Operador "
+                            + "que lo sincronice."
             );
         }
 
@@ -230,32 +208,11 @@ public class BookingService {
             );
         }
 
-        // El stock ya se descontó previamente.
-        // Confirmar llegada solo modifica el estado.
+        // El stock ya fue reservado previamente.
         booking.setStatus(BookingStatus.EN_USO);
 
         return toResponse(
-                bookingRepository.saveAndFlush(booking)
-        );
-    }
-
-    private void executeStock(
-            BookingStockWorkflow.PendingChange change,
-            Jwt jwt
-    ) {
-        if (change == null) {
-            return;
-        }
-
-        try {
-            catalog.apply(change, jwt);
-
-        } catch (CatalogRejectedException rejected) {
-            stockWorkflow.reject(change);
-            throw rejected;
-        }
-
-        stockWorkflow.complete(change);
+                bookingRepository.saveAndFlush(booking));
     }
 
     private boolean puedeGestionar(Jwt jwt) {
@@ -263,12 +220,8 @@ public class BookingService {
                 || tieneRol(jwt, "Operador");
     }
 
-    private boolean tieneRol(
-            Jwt jwt,
-            String rol
-    ) {
-        List<String> roles =
-                jwt.getClaimAsStringList("roles");
+    private boolean tieneRol(Jwt jwt, String rol) {
+        List<String> roles = jwt.getClaimAsStringList("roles");
 
         return roles != null && roles.contains(rol);
     }
@@ -306,8 +259,7 @@ public class BookingService {
     private Booking findEntityById(Long id) {
         return bookingRepository.findById(id)
                 .orElseThrow(() ->
-                        new BookingNotFoundException(id)
-                );
+                        new BookingNotFoundException(id));
     }
 
     private BookingResponse toResponse(Booking booking) {
