@@ -9,6 +9,8 @@ import cl.campuslab.bookings.dto.BookingResponse;
 import cl.campuslab.bookings.entity.Booking;
 import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
+import cl.campuslab.bookings.messaging.BookingTaskMessage;
+import cl.campuslab.bookings.messaging.BookingTaskService;
 import cl.campuslab.bookings.repository.BookingRepository;
 import cl.campuslab.bookings.stock.ArrivalPolicy;
 import cl.campuslab.bookings.stock.BookingStockWorkflow;
@@ -26,15 +28,18 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final CatalogClient catalog;
     private final BookingStockWorkflow stockWorkflow;
+    private final BookingTaskService tasks;
 
     public BookingService(
             BookingRepository bookingRepository,
             CatalogClient catalog,
-            BookingStockWorkflow stockWorkflow) {
+            BookingStockWorkflow stockWorkflow,
+            BookingTaskService tasks) {
 
         this.bookingRepository = bookingRepository;
         this.catalog = catalog;
         this.stockWorkflow = stockWorkflow;
+        this.tasks = tasks;
     }
 
     public List<BookingResponse> findAll(Jwt jwt) {
@@ -62,6 +67,7 @@ public class BookingService {
         return toResponse(booking);
     }
 
+    @Transactional
     public BookingResponse create(
             BookingRequest request,
             Jwt jwt) {
@@ -108,7 +114,16 @@ public class BookingService {
                 .status(BookingStatus.SOLICITADA)
                 .build();
 
-        return toResponse(bookingRepository.save(booking));
+        Booking saved = bookingRepository.saveAndFlush(booking);
+
+        // La reserva y su tarea de correo se guardan juntas.
+        tasks.enqueue(
+                saved,
+                BookingTaskMessage.EventType.REQUESTED,
+                "booking:" + saved.getId() + ":requested"
+        );
+
+        return toResponse(saved);
     }
 
     public BookingResponse changeStatus(
@@ -123,11 +138,10 @@ public class BookingService {
             );
         }
 
-        // Guarda el estado pendiente y el comando en la misma
-        // transaccion. El publicador lo enviara en segundo plano.
+        // Guarda el estado pendiente y el comando de stock.
         stockWorkflow.prepare(id, newStatus);
 
-        // No espera la respuesta de catalogo.
+        // El resultado llegara mediante RabbitMQ.
         return toResponse(findEntityById(id));
     }
 
@@ -139,7 +153,6 @@ public class BookingService {
             );
         }
 
-        // La sincronizacion tambien se procesa mediante RabbitMQ.
         stockWorkflow.prepareReconciliation(id);
 
         return toResponse(findEntityById(id));
@@ -173,7 +186,7 @@ public class BookingService {
             );
         }
 
-        // Repetir la confirmacion no modifica el stock ni el estado.
+        // Repetir la confirmacion no genera cambios ni nuevas tareas.
         if (booking.getStatus() == BookingStatus.EN_USO) {
             return toResponse(booking);
         }
@@ -211,8 +224,15 @@ public class BookingService {
         // El stock ya fue reservado previamente.
         booking.setStatus(BookingStatus.EN_USO);
 
-        return toResponse(
-                bookingRepository.saveAndFlush(booking));
+        Booking saved = bookingRepository.saveAndFlush(booking);
+
+        tasks.enqueue(
+                saved,
+                BookingTaskMessage.EventType.ARRIVAL_CONFIRMED,
+                "booking:" + saved.getId() + ":arrival"
+        );
+
+        return toResponse(saved);
     }
 
     private boolean puedeGestionar(Jwt jwt) {

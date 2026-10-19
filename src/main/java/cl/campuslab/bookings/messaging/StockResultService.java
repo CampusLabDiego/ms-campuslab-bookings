@@ -17,15 +17,18 @@ public class StockResultService {
 
     private final BookingRepository bookings;
     private final StockOutboxRepository outbox;
+    private final BookingTaskService tasks;
     private final Validator validator;
 
     public StockResultService(
             BookingRepository bookings,
             StockOutboxRepository outbox,
+            BookingTaskService tasks,
             Validator validator) {
 
         this.bookings = bookings;
         this.outbox = outbox;
+        this.tasks = tasks;
         this.validator = validator;
     }
 
@@ -33,11 +36,12 @@ public class StockResultService {
     public boolean apply(StockResultMessage result) {
         if (result == null
                 || !validator.validate(result).isEmpty()) {
+
             throw new IllegalArgumentException(
                     "El resultado de stock tiene datos invalidos.");
         }
 
-        // Mantiene el mismo orden de bloqueo que el flujo de reservas:
+        // Mantiene el orden de bloqueo:
         // primero la reserva y despues la operacion.
         Booking booking = bookings
                 .findLockedById(result.bookingId())
@@ -66,7 +70,7 @@ public class StockResultService {
                                 + "para la misma operacion.");
             }
 
-            // El resultado ya fue procesado.
+            // Ya fue procesado: no repite cambios ni tareas.
             return false;
         }
 
@@ -80,14 +84,26 @@ public class StockResultService {
         }
 
         if (result.outcome() == StockResultMessage.Outcome.APPLIED) {
+            boolean changed = booking.getStatus() != target;
+
             booking.setStatus(target);
             booking.setStockReserved(
                     BookingTransitions.active(target));
 
             operation.setLastError(null);
+
+            // Una sincronizacion que conserva el estado
+            // no genera nuevas notificaciones o documentos.
+            if (changed) {
+                tasks.enqueue(
+                        booking,
+                        eventFor(target),
+                        "stock:" + operation.getOperationId()
+                );
+            }
+
         } else {
-            // Un rechazo conserva el estado anterior de la reserva
-            // y su marca actual de stock.
+            // Conserva el estado anterior y su marca de stock.
             operation.setLastError(result.detail());
         }
 
@@ -96,10 +112,35 @@ public class StockResultService {
         operation.setState(resultingState);
         operation.setUpdatedAt(Instant.now());
 
+        // Reserva, resultado y tareas se confirman juntos.
         bookings.save(booking);
         outbox.save(operation);
 
         return true;
+    }
+
+    private BookingTaskMessage.EventType eventFor(
+            BookingStatus status) {
+
+        return switch (status) {
+            case SOLICITADA ->
+                    BookingTaskMessage.EventType.REQUESTED;
+
+            case APROBADA ->
+                    BookingTaskMessage.EventType.APPROVED;
+
+            case EN_PREPARACION ->
+                    BookingTaskMessage.EventType.PREPARATION_STARTED;
+
+            case EN_USO ->
+                    BookingTaskMessage.EventType.ARRIVAL_CONFIRMED;
+
+            case DEVUELTA ->
+                    BookingTaskMessage.EventType.RETURNED;
+
+            case CANCELADA ->
+                    BookingTaskMessage.EventType.CANCELLED;
+        };
     }
 
     private void validateCorrespondence(
