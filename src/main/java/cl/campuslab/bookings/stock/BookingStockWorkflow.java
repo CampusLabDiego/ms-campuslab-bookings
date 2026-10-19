@@ -8,9 +8,13 @@ import cl.campuslab.bookings.entity.Booking;
 import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
 import cl.campuslab.bookings.exception.InvalidBookingStatusException;
+
+import cl.campuslab.bookings.messaging.BookingAuditMessage;
+import cl.campuslab.bookings.messaging.BookingAuditService;
 import cl.campuslab.bookings.messaging.StockCommandMessage;
 import cl.campuslab.bookings.messaging.StockOutbox;
 import cl.campuslab.bookings.messaging.StockOutboxRepository;
+
 import cl.campuslab.bookings.repository.BookingRepository;
 
 import org.springframework.http.HttpStatus;
@@ -29,17 +33,23 @@ public class BookingStockWorkflow {
 
     private final BookingRepository bookings;
     private final StockOutboxRepository outbox;
+    private final BookingAuditService audit;
 
     public BookingStockWorkflow(
             BookingRepository bookings,
-            StockOutboxRepository outbox) {
-
+            StockOutboxRepository outbox,
+            BookingAuditService audit
+    ) {
         this.bookings = bookings;
         this.outbox = outbox;
+        this.audit = audit;
     }
 
     @Transactional
-    public PendingChange prepare(Long id, BookingStatus target) {
+    public PendingChange prepare(
+            Long id,
+            BookingStatus target
+    ) {
         return prepare(locked(id), target, false);
     }
 
@@ -55,14 +65,18 @@ public class BookingStockWorkflow {
             );
         }
 
-        return prepare(booking, booking.getStatus(), true);
+        return prepare(
+                booking,
+                booking.getStatus(),
+                true
+        );
     }
 
     private PendingChange prepare(
             Booking booking,
             BookingStatus target,
-            boolean reconciliation) {
-
+            boolean reconciliation
+    ) {
         if (booking.getPendingStatus() != null) {
             if (booking.getPendingStatus() != target) {
                 throw new ResponseStatusException(
@@ -73,15 +87,22 @@ public class BookingStockWorkflow {
                                 + "."
                 );
             }
+
         } else {
-            if (!reconciliation && booking.getStatus() == target) {
+            if (
+                    !reconciliation
+                    && booking.getStatus() == target
+            ) {
                 return null;
             }
 
-            if (!reconciliation
+            if (
+                    !reconciliation
                     && !BookingTransitions.allowed(
-                            booking.getStatus(), target)) {
-
+                            booking.getStatus(),
+                            target
+                    )
+            ) {
                 throw new InvalidBookingStatusException(
                         "No se puede cambiar de "
                                 + booking.getStatus()
@@ -102,27 +123,34 @@ public class BookingStockWorkflow {
                 BookingTransitions.stockAction(target)
         );
 
-        enqueue(change);
+        enqueue(booking, change);
 
         return change;
     }
 
-    private void enqueue(PendingChange change) {
+    private void enqueue(
+            Booking booking,
+            PendingChange change
+    ) {
         StockOutbox existing = outbox
                 .findFirstByBookingIdAndStateInOrderByCreatedAtDesc(
                         change.bookingId(),
-                        ACTIVE_STATES)
+                        ACTIVE_STATES
+                )
                 .orElse(null);
 
         if (existing != null) {
             boolean sameOperation =
                     existing.getTargetStatus().equals(
-                            change.target().name())
+                            change.target().name()
+                    )
                     && existing.getResourceId().equals(
-                            change.resourceId())
+                            change.resourceId()
+                    )
                     && existing.getQuantity() == change.quantity()
                     && existing.getAction().name().equals(
-                            change.action());
+                            change.action()
+                    );
 
             if (!sameOperation) {
                 throw new ResponseStatusException(
@@ -132,7 +160,7 @@ public class BookingStockWorkflow {
                 );
             }
 
-            // Reutiliza la operacion que ya esta en proceso.
+            // Reutiliza la operación sin duplicar el evento.
             return;
         }
 
@@ -148,16 +176,32 @@ public class BookingStockWorkflow {
         outbox.save(
                 StockOutbox.pending(
                         command,
-                        change.target().name())
+                        change.target().name()
+                )
         );
+
+        // Una reconciliación que mantiene el estado no se registra
+        // como solicitud de cambio de estado.
+        if (booking.getStatus() != change.target()) {
+            audit.enqueue(
+                    booking,
+                    BookingAuditMessage.EventType.STATUS_CHANGE_REQUESTED,
+                    booking.getStatus().name(),
+                    change.target().name(),
+                    command.operationId(),
+                    "stock:" + command.operationId() + ":requested"
+            );
+        }
     }
 
     @Transactional
     public void complete(PendingChange change) {
         Booking booking = locked(change.bookingId());
 
-        if (booking.getPendingStatus() == null
-                && booking.getStatus() == change.target()) {
+        if (
+                booking.getPendingStatus() == null
+                && booking.getStatus() == change.target()
+        ) {
             return;
         }
 
@@ -170,7 +214,8 @@ public class BookingStockWorkflow {
 
         booking.setStatus(change.target());
         booking.setStockReserved(
-                BookingTransitions.active(change.target()));
+                BookingTransitions.active(change.target())
+        );
         booking.setPendingStatus(null);
 
         bookings.saveAndFlush(booking);

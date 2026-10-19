@@ -10,6 +10,7 @@ import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -25,13 +26,22 @@ public class RabbitTopologyConfig {
     @Bean
     public Declarables campuslabRabbitTopology() {
         DirectExchange commands = new DirectExchange(
-                RabbitNames.COMMAND_EXCHANGE, true, false);
+                RabbitNames.COMMAND_EXCHANGE,
+                true,
+                false
+        );
 
         TopicExchange topics = new TopicExchange(
-                RabbitNames.TOPIC_EXCHANGE, true, false);
+                RabbitNames.TOPIC_EXCHANGE,
+                true,
+                false
+        );
 
         DirectExchange deadLetters = new DirectExchange(
-                RabbitNames.DEAD_LETTER_EXCHANGE, true, false);
+                RabbitNames.DEAD_LETTER_EXCHANGE,
+                true,
+                false
+        );
 
         List<Declarable> declarations = new ArrayList<>();
 
@@ -39,73 +49,117 @@ public class RabbitTopologyConfig {
         declarations.add(topics);
         declarations.add(deadLetters);
 
-        addQueue(
+        addCommandQueue(
                 declarations,
                 commands,
                 deadLetters,
                 RabbitNames.STOCK_QUEUE,
                 RabbitNames.STOCK_ROUTING_KEY,
-                RabbitNames.STOCK_DLQ);
+                RabbitNames.STOCK_DLQ
+        );
 
-        addQueue(
+        addCommandQueue(
                 declarations,
                 commands,
                 deadLetters,
                 RabbitNames.STOCK_RESULT_QUEUE,
                 RabbitNames.STOCK_RESULT_ROUTING_KEY,
-                RabbitNames.STOCK_RESULT_DLQ);
+                RabbitNames.STOCK_RESULT_DLQ
+        );
 
-        Queue email = addQueue(
+        Queue email = addCommandQueue(
                 declarations,
                 commands,
                 deadLetters,
                 RabbitNames.EMAIL_QUEUE,
                 RabbitNames.EMAIL_ROUTING_KEY,
-                RabbitNames.EMAIL_DLQ);
+                RabbitNames.EMAIL_DLQ
+        );
 
-        Queue preparation = addQueue(
+        Queue preparation = addCommandQueue(
                 declarations,
                 commands,
                 deadLetters,
                 RabbitNames.PREP_QUEUE,
                 RabbitNames.PREP_ROUTING_KEY,
-                RabbitNames.PREP_DLQ);
+                RabbitNames.PREP_DLQ
+        );
 
-        Queue voucher = addQueue(
+        Queue voucher = addCommandQueue(
                 declarations,
                 commands,
                 deadLetters,
                 RabbitNames.VOUCHER_QUEUE,
                 RabbitNames.VOUCHER_ROUTING_KEY,
-                RabbitNames.VOUCHER_DLQ);
+                RabbitNames.VOUCHER_DLQ
+        );
 
         declarations.add(
                 BindingBuilder.bind(email)
                         .to(topics)
-                        .with(RabbitNames.EMAIL_TOPIC_PATTERN));
+                        .with(RabbitNames.EMAIL_TOPIC_PATTERN)
+        );
 
         declarations.add(
                 BindingBuilder.bind(preparation)
                         .to(topics)
-                        .with(RabbitNames.PREP_TOPIC_PATTERN));
+                        .with(RabbitNames.PREP_TOPIC_PATTERN)
+        );
 
         declarations.add(
                 BindingBuilder.bind(voucher)
                         .to(topics)
-                        .with(RabbitNames.VOUCHER_TOPIC_PATTERN));
+                        .with(RabbitNames.VOUCHER_TOPIC_PATTERN)
+        );
+
+        Queue audit = addQueueWithDlq(
+                declarations,
+                deadLetters,
+                RabbitNames.AUDIT_QUEUE,
+                RabbitNames.AUDIT_DLQ
+        );
+
+        declarations.add(
+                BindingBuilder.bind(audit)
+                        .to(topics)
+                        .with(RabbitNames.AUDIT_TOPIC_PATTERN)
+        );
 
         return new Declarables(
-                declarations.toArray(Declarable[]::new));
+                declarations.toArray(Declarable[]::new)
+        );
     }
 
-    private Queue addQueue(
+    private Queue addCommandQueue(
             List<Declarable> declarations,
             DirectExchange commands,
             DirectExchange deadLetters,
             String queueName,
             String routingKey,
-            String deadLetterQueueName) {
+            String deadLetterQueueName
+    ) {
+        Queue queue = addQueueWithDlq(
+                declarations,
+                deadLetters,
+                queueName,
+                deadLetterQueueName
+        );
 
+        declarations.add(
+                BindingBuilder.bind(queue)
+                        .to(commands)
+                        .with(routingKey)
+        );
+
+        return queue;
+    }
+
+    private Queue addQueueWithDlq(
+            List<Declarable> declarations,
+            DirectExchange deadLetters,
+            String queueName,
+            String deadLetterQueueName
+    ) {
         Queue queue = QueueBuilder.durable(queueName)
                 .withArgument("x-queue-type", "classic")
                 .ttl(MESSAGE_TTL_MS)
@@ -129,14 +183,10 @@ public class RabbitTopologyConfig {
         declarations.add(deadLetterQueue);
 
         declarations.add(
-                BindingBuilder.bind(queue)
-                        .to(commands)
-                        .with(routingKey));
-
-        declarations.add(
                 BindingBuilder.bind(deadLetterQueue)
                         .to(deadLetters)
-                        .with(deadLetterQueueName));
+                        .with(deadLetterQueueName)
+        );
 
         return queue;
     }

@@ -9,8 +9,12 @@ import cl.campuslab.bookings.dto.BookingResponse;
 import cl.campuslab.bookings.entity.Booking;
 import cl.campuslab.bookings.enums.BookingStatus;
 import cl.campuslab.bookings.exception.BookingNotFoundException;
+
+import cl.campuslab.bookings.messaging.BookingAuditMessage;
+import cl.campuslab.bookings.messaging.BookingAuditService;
 import cl.campuslab.bookings.messaging.BookingTaskMessage;
 import cl.campuslab.bookings.messaging.BookingTaskService;
+
 import cl.campuslab.bookings.repository.BookingRepository;
 import cl.campuslab.bookings.stock.ArrivalPolicy;
 import cl.campuslab.bookings.stock.BookingStockWorkflow;
@@ -29,17 +33,20 @@ public class BookingService {
     private final CatalogClient catalog;
     private final BookingStockWorkflow stockWorkflow;
     private final BookingTaskService tasks;
+    private final BookingAuditService audit;
 
     public BookingService(
             BookingRepository bookingRepository,
             CatalogClient catalog,
             BookingStockWorkflow stockWorkflow,
-            BookingTaskService tasks) {
-
+            BookingTaskService tasks,
+            BookingAuditService audit
+    ) {
         this.bookingRepository = bookingRepository;
         this.catalog = catalog;
         this.stockWorkflow = stockWorkflow;
         this.tasks = tasks;
+        this.audit = audit;
     }
 
     public List<BookingResponse> findAll(Jwt jwt) {
@@ -70,8 +77,8 @@ public class BookingService {
     @Transactional
     public BookingResponse create(
             BookingRequest request,
-            Jwt jwt) {
-
+            Jwt jwt
+    ) {
         if (!request.endDateTime()
                 .isAfter(request.startDateTime())) {
 
@@ -116,11 +123,19 @@ public class BookingService {
 
         Booking saved = bookingRepository.saveAndFlush(booking);
 
-        // La reserva y su tarea de correo se guardan juntas.
         tasks.enqueue(
                 saved,
                 BookingTaskMessage.EventType.REQUESTED,
                 "booking:" + saved.getId() + ":requested"
+        );
+
+        audit.enqueue(
+                saved,
+                BookingAuditMessage.EventType.RESERVATION_CREATED,
+                null,
+                null,
+                null,
+                "booking:" + saved.getId() + ":created"
         );
 
         return toResponse(saved);
@@ -129,8 +144,8 @@ public class BookingService {
     public BookingResponse changeStatus(
             Long id,
             BookingStatus newStatus,
-            Jwt jwt) {
-
+            Jwt jwt
+    ) {
         if (!puedeGestionar(jwt)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
@@ -138,10 +153,10 @@ public class BookingService {
             );
         }
 
-        // Guarda el estado pendiente y el comando de stock.
+        // El workflow guarda el estado pendiente y el comando de stock.
         stockWorkflow.prepare(id, newStatus);
 
-        // El resultado llegara mediante RabbitMQ.
+        // La confirmación llegará mediante RabbitMQ.
         return toResponse(findEntityById(id));
     }
 
@@ -186,7 +201,7 @@ public class BookingService {
             );
         }
 
-        // Repetir la confirmacion no genera cambios ni nuevas tareas.
+        // Repetir la confirmación no genera cambios ni eventos.
         if (booking.getStatus() == BookingStatus.EN_USO) {
             return toResponse(booking);
         }
@@ -214,6 +229,7 @@ public class BookingService {
                     booking.getEndDateTime(),
                     LocalDateTime.now(ZoneOffset.UTC)
             );
+
         } catch (IllegalArgumentException error) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
@@ -221,7 +237,8 @@ public class BookingService {
             );
         }
 
-        // El stock ya fue reservado previamente.
+        String previousStatus = booking.getStatus().name();
+
         booking.setStatus(BookingStatus.EN_USO);
 
         Booking saved = bookingRepository.saveAndFlush(booking);
@@ -229,6 +246,15 @@ public class BookingService {
         tasks.enqueue(
                 saved,
                 BookingTaskMessage.EventType.ARRIVAL_CONFIRMED,
+                "booking:" + saved.getId() + ":arrival"
+        );
+
+        audit.enqueue(
+                saved,
+                BookingAuditMessage.EventType.ARRIVAL_CONFIRMED,
+                previousStatus,
+                BookingStatus.EN_USO.name(),
+                null,
                 "booking:" + saved.getId() + ":arrival"
         );
 

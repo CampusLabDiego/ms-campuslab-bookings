@@ -1,14 +1,14 @@
 package cl.campuslab.bookings.messaging;
 
 /**
- * Nombres de intercambios, colas y claves de enrutamiento.
+ * Nombres centralizados de exchanges, colas y routing keys.
  */
 public final class RabbitNames {
 
     private RabbitNames() {
     }
 
-    // Intercambios
+    // Exchanges
     public static final String COMMAND_EXCHANGE = "cmd.direct";
     public static final String TOPIC_EXCHANGE = "cmd.topic";
     public static final String DEAD_LETTER_EXCHANGE = "cmd.dead.dlx";
@@ -18,7 +18,7 @@ public final class RabbitNames {
     public static final String STOCK_ROUTING_KEY = "stock.command";
     public static final String STOCK_DLQ = "q.cmd.stock.dlq";
 
-    // Resultados de las operaciones de stock
+    // Resultados de stock
     public static final String STOCK_RESULT_QUEUE = "q.result.stock";
     public static final String STOCK_RESULT_ROUTING_KEY = "stock.result";
     public static final String STOCK_RESULT_DLQ = "q.result.stock.dlq";
@@ -29,7 +29,7 @@ public final class RabbitNames {
     public static final String EMAIL_TOPIC_PATTERN = "email.*";
     public static final String EMAIL_DLQ = "q.cmd.email.dlq";
 
-    // Tickets de preparacion
+    // Tickets de preparación
     public static final String PREP_QUEUE = "q.cmd.prep";
     public static final String PREP_ROUTING_KEY = "prep.ticket";
     public static final String PREP_TOPIC_PATTERN = "prep.#";
@@ -40,4 +40,10 @@ public final class RabbitNames {
     public static final String VOUCHER_ROUTING_KEY = "voucher.gen";
     public static final String VOUCHER_TOPIC_PATTERN = "voucher.*";
     public static final String VOUCHER_DLQ = "q.cmd.voucher.dlq";
+
+    // Eventos de auditoría
+    public static final String AUDIT_QUEUE = "q.evt.audit";
+    public static final String AUDIT_ROUTING_KEY = "booking.audit";
+    public static final String AUDIT_TOPIC_PATTERN = "booking.*";
+    public static final String AUDIT_DLQ = "q.evt.audit.dlq";
 }
