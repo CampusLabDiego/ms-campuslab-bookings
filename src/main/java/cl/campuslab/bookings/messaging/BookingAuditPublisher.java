@@ -12,6 +12,8 @@ import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
+import org.springframework.kafka.core.KafkaTemplate;
+
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -21,14 +23,20 @@ public class BookingAuditPublisher {
     private static final Logger log =
             LoggerFactory.getLogger(BookingAuditPublisher.class);
 
+    private static final String BOOKINGS_TOPIC = "bookings.events";
+    private static final String AUDIT_TOPIC = "audit.timeline";
+
     private final RabbitTemplate rabbitTemplate;
+    private final KafkaTemplate<String, String> kafkaTemplate;
     private final BookingAuditOutboxStore store;
 
     public BookingAuditPublisher(
             RabbitTemplate rabbitTemplate,
+            KafkaTemplate<String, String> kafkaTemplate,
             BookingAuditOutboxStore store
     ) {
         this.rabbitTemplate = rabbitTemplate;
+        this.kafkaTemplate = kafkaTemplate;
         this.store = store;
     }
 
@@ -50,6 +58,7 @@ public class BookingAuditPublisher {
             BookingAuditOutboxStore.Publication publication
     ) {
         String eventId = publication.eventId();
+        String bookingId = String.valueOf(publication.bookingId());
         int attempt = publication.attempt();
 
         CorrelationData correlation = new CorrelationData(
@@ -94,7 +103,7 @@ public class BookingAuditPublisher {
                         "Auditoría sin cola de destino: "
                                 + "evento={}, reserva={}, intento={}",
                         eventId,
-                        publication.bookingId(),
+                        bookingId,
                         attempt
                 );
 
@@ -118,15 +127,26 @@ public class BookingAuditPublisher {
                 return;
             }
 
+            kafkaTemplate.send(
+                    BOOKINGS_TOPIC,
+                    bookingId,
+                    publication.payload()
+            ).get(5, TimeUnit.SECONDS);
+
+            kafkaTemplate.send(
+                    AUDIT_TOPIC,
+                    bookingId,
+                    publication.payload()
+            ).get(5, TimeUnit.SECONDS);
+
             store.markPublished(eventId, attempt);
 
             log.info(
-                    "Auditoría publicada: evento={}, reserva={}, "
-                            + "exchange={}, routingKey={}, intento={}",
+                    "Evento publicado en RabbitMQ y Kafka: "
+                            + "evento={}, reserva={}, tópicos={}, intento={}",
                     eventId,
-                    publication.bookingId(),
-                    RabbitNames.TOPIC_EXCHANGE,
-                    RabbitNames.AUDIT_ROUTING_KEY,
+                    bookingId,
+                    BOOKINGS_TOPIC + ", " + AUDIT_TOPIC,
                     attempt
             );
 
@@ -148,7 +168,7 @@ public class BookingAuditPublisher {
             );
 
             log.warn(
-                    "Auditoría pendiente de reintento: "
+                    "Evento pendiente de reintento: "
                             + "evento={}, intento={}, causa={}",
                     eventId,
                     attempt,
